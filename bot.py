@@ -22,7 +22,7 @@ from colorama import Fore, Style
 # Инициализация colorama для цветного логирования
 colorama.init(autoreset=True)
 
-# Кастомный форматтер для логов с цветами
+# Кастомный форматтер для логгера с цветной разметкой
 class ColoredFormatter(logging.Formatter):
     COLORS = {
         logging.DEBUG: Fore.CYAN,
@@ -36,7 +36,7 @@ class ColoredFormatter(logging.Formatter):
         message = super().format(record)
         return color + message + Style.RESET_ALL
 
-# Флаг для headless-режима. Для отладки установите HEADLESS = False.
+# Флаг для headless‑режима. Для отладки установите HEADLESS = False.
 HEADLESS = True
 
 # Баннер
@@ -81,7 +81,7 @@ def load_accounts():
     """
     accounts = []
     if os.path.exists("accounts.txt"):
-        with open("accounts.txt", "r") as f:
+        with open("accounts.txt", "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -104,7 +104,7 @@ def load_accounts():
     return accounts
 
 # Загрузка прокси из файла active_proxies.txt
-with open("active_proxies.txt", "r") as f:
+with open("active_proxies.txt", "r", encoding="utf-8") as f:
     proxies = [line.strip() for line in f if line.strip()]
 if not proxies:
     logger.warning("Прокси не найдены в active_proxies.txt. Работаем в режиме прямого соединения.")
@@ -189,7 +189,7 @@ def setup_chrome_options(proxy=None):
     """
     Настраивает ChromeOptions.
     Если прокси содержит аутентификацию, создается динамическое расширение.
-    Добавлены опции для отключения WebRTC, чтобы подавлять ошибки STUN.
+    Добавлены опции для отключения WebRTC (чтобы подавлять ошибки STUN) и уменьшения системного логирования.
     """
     chrome_options = Options()
     if HEADLESS:
@@ -201,6 +201,10 @@ def setup_chrome_options(proxy=None):
     chrome_options.add_argument("--disable-web-security")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--webrtc-ip-handling-policy=disable_non_proxied_udp")
+    # Дополнительные опции для снижения логирования
+    chrome_options.add_argument("--disable-logging")
+    chrome_options.add_argument("--log-level=3")
+    chrome_options.add_argument("--v=0")
     
     if proxy:
         if "@" in proxy:
@@ -324,32 +328,49 @@ def attempt_connection(proxy, account):
         logger.error(f"Не удалось установить подключение для аккаунта {account[0]} ни через один из вариантов прокси.")
         return None
 
-def worker(account, proxy, node_index):
+def add_account():
     """
-    Функция-воркер для выполнения задач для конкретного аккаунта.
-    node_index – порядковый номер ноды для этого аккаунта.
+    Запрашивает у пользователя данные нового аккаунта и добавляет их в файл accounts.txt.
     """
-    driver = attempt_connection(proxy, account)
-    if driver:
-        logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Работаем.")
-        try:
-            while True:
-                time.sleep(random.uniform(20, 40))
-                logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Выполнение задач...")
-        except KeyboardInterrupt:
-            logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Работа воркера остановлена по запросу пользователя.")
-        finally:
-            driver.quit()
+    email = input("Введите email нового аккаунта: ").strip()
+    password = input("Введите пароль для нового аккаунта: ").strip()
+    if email and password:
+        with open("accounts.txt", "a", encoding="utf-8") as f:
+            f.write(f"{email}:{password}\n")
+        logger.info(f"Аккаунт {email} успешно добавлен.")
+        return (email, password)
     else:
-        logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Не удалось подключиться. Переход к следующему.")
+        logger.warning("Неверно введены данные аккаунта.")
+        return None
+
+def add_proxy():
+    """
+    Запрашивает данные нового прокси и добавляет его в файл active_proxies.txt.
+    """
+    proxy = input("Введите новый прокси (например, http://username:password@proxy_host:proxy_port): ").strip()
+    if proxy:
+        with open("active_proxies.txt", "a", encoding="utf-8") as f:
+            f.write(proxy + "\n")
+        logger.info(f"Прокси {proxy} успешно добавлен.")
+        return proxy
+    else:
+        logger.warning("Прокси не был введён.")
+        return None
 
 def management_interface(accounts):
     """
     Интерфейс управления для выбора аккаунтов и запуска бота.
-    Есть опции для запуска с прокси и без прокси.
-    Можно указать количество сессий (нод) для каждого аккаунта,
-    задержку между запуском нод и выбрать, использовать ли один прокси для всех нод
-    или разные прокси для каждой ноды.
+    Опции:
+     1. Запустить бота для одного аккаунта (с прокси)
+     2. Запустить бота для одного аккаунта (без прокси)
+     3. Запустить бота для всех аккаунтов (с прокси)
+     4. Запустить бота для всех аккаунтов (без прокси)
+     5. Добавить новый аккаунт
+     6. Добавить новый прокси
+     7. Выход
+     
+    При выборе 1 и 2 можно задать количество сессий (нод) для выбранного аккаунта и задержку между запуском нод.
+    При выборе 1 также можно указать, использовать ли один прокси для всех нод или разные для каждой.
     """
     while True:
         print("\nМеню управления:")
@@ -357,8 +378,10 @@ def management_interface(accounts):
         print("2. Запустить бота для одного аккаунта (без прокси)")
         print("3. Запустить бота для всех аккаунтов (с прокси)")
         print("4. Запустить бота для всех аккаунтов (без прокси)")
-        print("5. Выход")
-        choice = input("Выберите опцию (1-5): ").strip()
+        print("5. Добавить новый аккаунт")
+        print("6. Добавить новый прокси")
+        print("7. Выход")
+        choice = input("Выберите опцию (1-7): ").strip()
         if choice == "1":
             print("\nСписок аккаунтов:")
             for idx, account in enumerate(accounts, start=1):
@@ -380,9 +403,8 @@ def management_interface(accounts):
                             chosen_proxy = random.choice(proxies)
                     else:
                         chosen_proxy = random.choice(proxies)
-                    # Дополнительный выбор: использовать один прокси для всех нод или разные
-                    use_same_proxy = input("Использовать один прокси для всех нод? (да/нет): ").strip().lower()
-                    same_proxy = use_same_proxy in ["да", "yes", "y"]
+                    same_proxy_input = input("Использовать один прокси для всех нод? (да/нет): ").strip().lower()
+                    same_proxy = same_proxy_input in ["да", "yes", "y"]
                     sessions_input = input("Введите количество сессий (нод) для данного аккаунта: ").strip()
                     try:
                         sessions = int(sessions_input)
@@ -397,8 +419,7 @@ def management_interface(accounts):
                         print("Неверное значение. Задержка установлена в 0 секунд.")
                     logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий с прокси {chosen_proxy if chosen_proxy else 'Direct mode'} с задержкой {delay} сек.")
                     with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions+1):
-                            # Если требуется использовать разные прокси, выбираем случайное для каждой ноды
+                        for node in range(1, sessions + 1):
                             proxy_for_node = chosen_proxy if same_proxy else random.choice(proxies)
                             executor.submit(worker, selected_account, proxy_for_node, node)
                             time.sleep(delay)
@@ -429,7 +450,7 @@ def management_interface(accounts):
                         print("Неверное значение. Задержка установлена в 0 секунд.")
                     logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий без прокси с задержкой {delay} сек.")
                     with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             executor.submit(worker, selected_account, None, node)
                             time.sleep(delay)
                 else:
@@ -451,10 +472,10 @@ def management_interface(accounts):
                     delay = 0
                     print("Неверное значение. Задержка установлена в 0 секунд.")
                 logger.info(f"Запуск бота для всех аккаунтов с прокси. Для каждого аккаунта будет запущено {sessions} сессий с задержкой {delay} сек.")
-                with ThreadPoolExecutor(max_workers=min(len(accounts)*sessions, 5)) as executor:
+                with ThreadPoolExecutor(max_workers=min(len(accounts) * sessions, 5)) as executor:
                     futures = []
                     for account in accounts:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             chosen_proxy = random.choice(proxies)
                             futures.append(executor.submit(worker, account, chosen_proxy, node))
                             time.sleep(delay)
@@ -478,10 +499,10 @@ def management_interface(accounts):
                     delay = 0
                     print("Неверное значение. Задержка установлена в 0 секунд.")
                 logger.info(f"Запуск бота для всех аккаунтов без прокси. Для каждого аккаунта будет запущено {sessions} сессий с задержкой {delay} сек.")
-                with ThreadPoolExecutor(max_workers=len(accounts)*sessions) as executor:
+                with ThreadPoolExecutor(max_workers=len(accounts) * sessions) as executor:
                     futures = []
                     for account in accounts:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             futures.append(executor.submit(worker, account, None, node))
                             time.sleep(delay)
                     for future in as_completed(futures):
@@ -490,10 +511,47 @@ def management_interface(accounts):
                 logger.info("Остановка всех воркеров по запросу пользователя.")
                 break
         elif choice == "5":
+            new_acc = add_account()
+            if new_acc:
+                accounts.append(new_acc)
+        elif choice == "6":
+            new_proxy = add_proxy()
+            if new_proxy:
+                proxies.append(new_proxy)
+        elif choice == "7":
             print("Выход из программы.")
             exit(0)
         else:
             print("Неверный выбор. Попробуйте снова.")
+
+def add_account():
+    """
+    Запрашивает у пользователя данные нового аккаунта и добавляет их в файл accounts.txt.
+    """
+    email = input("Введите email нового аккаунта: ").strip()
+    password = input("Введите пароль нового аккаунта: ").strip()
+    if email and password:
+        with open("accounts.txt", "a", encoding="utf-8") as f:
+            f.write(f"{email}:{password}\n")
+        logger.info(f"Аккаунт {email} успешно добавлен.")
+        return (email, password)
+    else:
+        logger.warning("Неверно введены данные аккаунта.")
+        return None
+
+def add_proxy():
+    """
+    Запрашивает данные нового прокси и добавляет его в файл active_proxies.txt.
+    """
+    proxy = input("Введите новый прокси (например, http://username:password@proxy_host:proxy_port): ").strip()
+    if proxy:
+        with open("active_proxies.txt", "a", encoding="utf-8") as f:
+            f.write(proxy + "\n")
+        logger.info(f"Прокси {proxy} успешно добавлен.")
+        return proxy
+    else:
+        logger.warning("Прокси не был введён.")
+        return None
 
 def main():
     accounts = load_accounts()
