@@ -20,7 +20,7 @@
 3. **Создайте виртуальное окружение (рекомендуется):**
 
    ```bash
-   python -m venv venv
+   python3 -m venv venv
    source venv/bin/activate  # Для Linux/MacOS
    venv\Scripts\activate     # Для Windows
    ```
