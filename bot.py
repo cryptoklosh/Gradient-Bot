@@ -345,17 +345,27 @@ def add_account():
 
 def add_proxy():
     """
-    Запрашивает данные нового прокси и добавляет его в файл active_proxies.txt.
+    Запрашивает у пользователя ввод нескольких прокси (по одной на строке)
+    и добавляет их в файл active_proxies.txt.
+    Ввод завершается, когда пользователь вводит пустую строку.
     """
-    proxy = input("Введите новый прокси (например, http://username:password@proxy_host:proxy_port): ").strip()
-    if proxy:
+    print("Введите новые прокси (по одной в строке). Для завершения введите пустую строку:")
+    new_proxies = []
+    while True:
+        line = input().strip()
+        if not line:
+            break
+        new_proxies.append(line)
+    if new_proxies:
         with open("active_proxies.txt", "a", encoding="utf-8") as f:
-            f.write(proxy + "\n")
-        logger.info(f"Прокси {proxy} успешно добавлен.")
-        return proxy
+            for proxy in new_proxies:
+                f.write(proxy + "\n")
+        logger.info(f"Прокси добавлены: {', '.join(new_proxies)}")
+        return new_proxies
     else:
-        logger.warning("Прокси не был введён.")
+        logger.warning("Прокси не были введены.")
         return None
+
 
 def management_interface(accounts):
     """
