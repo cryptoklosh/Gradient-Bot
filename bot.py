@@ -328,12 +328,31 @@ def attempt_connection(proxy, account):
         logger.error(f"Не удалось установить подключение для аккаунта {account[0]} ни через один из вариантов прокси.")
         return None
 
+def worker(account, proxy, node_index):
+    """
+    Функция-воркер для выполнения задач для конкретного аккаунта.
+    node_index – порядковый номер ноды для этого аккаунта.
+    """
+    driver = attempt_connection(proxy, account)
+    if driver:
+        logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Работаем.")
+        try:
+            while True:
+                time.sleep(random.uniform(20, 40))
+                logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Выполнение задач...")
+        except KeyboardInterrupt:
+            logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Работа воркера остановлена по запросу пользователя.")
+        finally:
+            driver.quit()
+    else:
+        logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Не удалось подключиться. Переход к следующему.")
+
 def add_account():
     """
     Запрашивает у пользователя данные нового аккаунта и добавляет их в файл accounts.txt.
     """
     email = input("Введите email нового аккаунта: ").strip()
-    password = input("Введите пароль для нового аккаунта: ").strip()
+    password = input("Введите пароль нового аккаунта: ").strip()
     if email and password:
         with open("accounts.txt", "a", encoding="utf-8") as f:
             f.write(f"{email}:{password}\n")
@@ -345,7 +364,7 @@ def add_account():
 
 def add_proxy():
     """
-    Запрашивает у пользователя ввод нескольких прокси (по одной на строке)
+    Запрашивает у пользователя ввод нескольких прокси (по одной в строке)
     и добавляет их в файл active_proxies.txt.
     Ввод завершается, когда пользователь вводит пустую строку.
     """
@@ -366,7 +385,6 @@ def add_proxy():
         logger.warning("Прокси не были введены.")
         return None
 
-
 def management_interface(accounts):
     """
     Интерфейс управления для выбора аккаунтов и запуска бота.
@@ -376,11 +394,8 @@ def management_interface(accounts):
      3. Запустить бота для всех аккаунтов (с прокси)
      4. Запустить бота для всех аккаунтов (без прокси)
      5. Добавить новый аккаунт
-     6. Добавить новый прокси
+     6. Добавить новый прокси (можно ввести несколько за один раз)
      7. Выход
-     
-    При выборе 1 и 2 можно задать количество сессий (нод) для выбранного аккаунта и задержку между запуском нод.
-    При выборе 1 также можно указать, использовать ли один прокси для всех нод или разные для каждой.
     """
     while True:
         print("\nМеню управления:")
@@ -525,43 +540,15 @@ def management_interface(accounts):
             if new_acc:
                 accounts.append(new_acc)
         elif choice == "6":
-            new_proxy = add_proxy()
-            if new_proxy:
-                proxies.append(new_proxy)
+            new_proxy_list = add_proxy()
+            if new_proxy_list:
+                for p in new_proxy_list:
+                    proxies.append(p)
         elif choice == "7":
             print("Выход из программы.")
             exit(0)
         else:
             print("Неверный выбор. Попробуйте снова.")
-
-def add_account():
-    """
-    Запрашивает у пользователя данные нового аккаунта и добавляет их в файл accounts.txt.
-    """
-    email = input("Введите email нового аккаунта: ").strip()
-    password = input("Введите пароль нового аккаунта: ").strip()
-    if email and password:
-        with open("accounts.txt", "a", encoding="utf-8") as f:
-            f.write(f"{email}:{password}\n")
-        logger.info(f"Аккаунт {email} успешно добавлен.")
-        return (email, password)
-    else:
-        logger.warning("Неверно введены данные аккаунта.")
-        return None
-
-def add_proxy():
-    """
-    Запрашивает данные нового прокси и добавляет его в файл active_proxies.txt.
-    """
-    proxy = input("Введите новый прокси (например, http://username:password@proxy_host:proxy_port): ").strip()
-    if proxy:
-        with open("active_proxies.txt", "a", encoding="utf-8") as f:
-            f.write(proxy + "\n")
-        logger.info(f"Прокси {proxy} успешно добавлен.")
-        return proxy
-    else:
-        logger.warning("Прокси не был введён.")
-        return None
 
 def main():
     accounts = load_accounts()
