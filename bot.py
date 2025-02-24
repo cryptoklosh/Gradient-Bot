@@ -1,3 +1,4 @@
+global proxies
 import os
 import time
 import logging
