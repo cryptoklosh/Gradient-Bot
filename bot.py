@@ -1,4 +1,3 @@
-global proxies
 import os
 import time
 import logging
@@ -74,10 +73,84 @@ CRX_URL = ("https://clients2.google.com/service/update2/crx?"
            "x=id%3D{0}%26uc&nacl_arch=x86-64".format(EXTENSION_ID))
 EXTENSION_FILENAME = "app.crx"
 
+# Глобальный генератор UserAgent
+ua = UserAgent()
+
+def create_proxy_auth_extension(host, port, username, password, scheme='http', plugin_path='proxy_auth_plugin.zip'):
+    """
+    Создает динамическое расширение для Chrome, задающее прокси с аутентификацией.
+    Возвращает путь к созданному ZIP-архиву расширения.
+    """
+    manifest_json = """
+{
+  "version": "1.0.0",
+  "manifest_version": 2,
+  "name": "Chrome Proxy Auth Extension",
+  "permissions": [
+    "proxy",
+    "tabs",
+    "unlimitedStorage",
+    "storage",
+    "<all_urls>",
+    "webRequest",
+    "webRequestBlocking"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "minimum_chrome_version": "22.0.0"
+}
+"""
+    background_js = f"""
+var config = {{
+    mode: "fixed_servers",
+    rules: {{
+        singleProxy: {{
+            scheme: "{scheme}",
+            host: "{host}",
+            port: parseInt({port})
+        }},
+        bypassList: ["localhost"]
+    }}
+}};
+chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{ }});
+function callbackFn(details) {{
+    return {{
+        authCredentials: {{
+            username: "{username}",
+            password: "{password}"
+        }}
+    }};
+}}
+chrome.webRequest.onAuthRequired.addListener(
+    callbackFn,
+    {{urls: ["<all_urls>"]}},
+    ["blocking"]
+);
+"""
+    with zipfile.ZipFile(plugin_path, 'w') as zp:
+        zp.writestr("manifest.json", manifest_json)
+        zp.writestr("background.js", background_js)
+    return plugin_path
+
+def download_extension():
+    """Скачивает расширение для приложения, если оно не скачано."""
+    logger.info(f"Скачивание расширения с: {CRX_URL}")
+    ext_path = Path(EXTENSION_FILENAME)
+    if ext_path.exists() and time.time() - ext_path.stat().st_mtime < 86400:
+        logger.info("Расширение уже скачано, пропускаем скачивание...")
+        return
+    response = requests.get(CRX_URL, headers={"User-Agent": ua.random})
+    if response.status_code == 200:
+        ext_path.write_bytes(response.content)
+        logger.info("Расширение успешно скачано")
+    else:
+        logger.error(f"Не удалось скачать расширение: {response.status_code}")
+        exit(1)
+
 def install_chrome_114():
     """
     Удаляет старые версии, скачивает и устанавливает Google Chrome 114 и соответствующий ChromeDriver 114.
-    Измените URL, если нужна другая версия.
     """
     logger.info("=== Установка/обновление Google Chrome 114 и ChromeDriver 114 ===")
     try:
@@ -126,9 +199,9 @@ def install_chrome_114():
 
 def check_browser_driver():
     """
-    Проверяет, установлены ли Google Chrome и ChromeDriver, выводит их версии.
+    Проверяет, установлены ли Google Chrome и ChromeDriver, и выводит их версии.
     """
-    logger.info("=== Проверка установленных браузера и драйвера ===")
+    logger.info("=== Проверка установленных Google Chrome и ChromeDriver ===")
     os.system("google-chrome --version || echo 'Google Chrome не установлен'")
     os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
 
@@ -218,6 +291,7 @@ def setup_chrome_options(proxy=None):
     """
     Настраивает ChromeOptions, включая опции для WebRTC и добавление расширений.
     """
+    global ua
     chrome_options = Options()
     if HEADLESS:
         chrome_options.add_argument("--headless=new")
@@ -323,6 +397,7 @@ def attempt_connection(proxy, account):
                 pass
             return None
     else:
+        global proxies
         available_proxies = proxies.copy()
         if proxy in available_proxies:
             available_proxies.remove(proxy)
@@ -370,15 +445,16 @@ def worker(account, proxy, node_index):
 def management_interface(accounts):
     """
     Интерактивное меню для управления ботом:
-      1. Запуск бота для одного аккаунта (с прокси)
-      2. Запуск бота для одного аккаунта (без прокси)
-      3. Запуск бота для всех аккаунтов (с прокси)
-      4. Запуск бота для всех аккаунтов (без прокси)
+      1. Запустить бота для одного аккаунта (с прокси)
+      2. Запустить бота для одного аккаунта (без прокси)
+      3. Запустить бота для всех аккаунтов (с прокси)
+      4. Запустить бота для всех аккаунтов (без прокси)
       5. Добавить новые аккаунты
       6. Добавить новые прокси
       7. Проверить/Установить Google Chrome и ChromeDriver
       8. Выход
     """
+    global proxies
     while True:
         print("\nМеню управления:")
         print("1. Запустить бота для одного аккаунта (с прокси)")
@@ -427,7 +503,7 @@ def management_interface(accounts):
                         print("Неверное значение. Задержка установлена в 0 секунд.")
                     logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий с прокси {chosen_proxy if chosen_proxy else 'Direct mode'} с задержкой {delay} сек.")
                     with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             proxy_for_node = chosen_proxy if same_proxy else random.choice(proxies)
                             executor.submit(worker, selected_account, proxy_for_node, node)
                             time.sleep(delay)
@@ -458,7 +534,7 @@ def management_interface(accounts):
                         print("Неверное значение. Задержка установлена в 0 секунд.")
                     logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий без прокси с задержкой {delay} сек.")
                     with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             executor.submit(worker, selected_account, None, node)
                             time.sleep(delay)
                 else:
@@ -480,10 +556,10 @@ def management_interface(accounts):
                     delay = 0
                     print("Неверное значение. Задержка установлена в 0 секунд.")
                 logger.info(f"Запуск бота для всех аккаунтов с прокси. Для каждого аккаунта будет запущено {sessions} сессий с задержкой {delay} сек.")
-                with ThreadPoolExecutor(max_workers=min(len(accounts)*sessions, 5)) as executor:
+                with ThreadPoolExecutor(max_workers=min(len(accounts) * sessions, 5)) as executor:
                     futures = []
                     for account in accounts:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             chosen_proxy = random.choice(proxies)
                             futures.append(executor.submit(worker, account, chosen_proxy, node))
                             time.sleep(delay)
@@ -507,10 +583,10 @@ def management_interface(accounts):
                     delay = 0
                     print("Неверное значение. Задержка установлена в 0 секунд.")
                 logger.info(f"Запуск бота для всех аккаунтов без прокси. Для каждого аккаунта будет запущено {sessions} сессий с задержкой {delay} сек.")
-                with ThreadPoolExecutor(max_workers=len(accounts)*sessions) as executor:
+                with ThreadPoolExecutor(max_workers=len(accounts) * sessions) as executor:
                     futures = []
                     for account in accounts:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             futures.append(executor.submit(worker, account, None, node))
                             time.sleep(delay)
                     for future in as_completed(futures):
