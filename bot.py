@@ -286,12 +286,18 @@ def worker(account, proxy, node_index):
 
 def install_chrome_114():
     """
-    Удаляет потенциальные старые версии, скачивает .deb Chrome 114, устанавливает,
-    скачивает chromedriver 114, распаковывает и кладёт в /usr/local/bin
+    Удаляет потенциально старые версии Chrome/Chromium,
+    скачивает .deb Chrome 114, устанавливает,
+    качает chromedriver 114, распаковывает и кладёт в /usr/bin.
     """
     logger.info("=== Установка/обновление Chrome 114 и ChromeDriver 114 ===")
     try:
-        # 1. Удаляем старые google-chrome, chromium
+        # 0. Убедимся, что есть unzip
+        logger.info("Устанавливаем unzip (если нет)...")
+        os.system("sudo apt-get update")
+        os.system("sudo apt-get install -y unzip")
+
+        # 1. Удаляем старые версии
         logger.info("Удаляем старые версии Chrome/Chromium...")
         cmds = [
             "sudo apt-get remove -y google-chrome-stable google-chrome-beta google-chrome-unstable",
@@ -309,21 +315,31 @@ def install_chrome_114():
 
         logger.info("Устанавливаем Chrome 114...")
         os.system("sudo dpkg -i chrome114.deb")
+        # На случай зависимостей
         os.system("sudo apt-get -f install -y")
 
-        # 3. Проверяем версию
+        # Проверяем версию Chrome
+        logger.info("Проверка версии Chrome...")
         os.system("google-chrome --version || echo 'Chrome не установлен'")
 
-        # 4. Скачиваем ChromeDriver 114
+        # 3. Скачиваем ChromeDriver 114
         logger.info("Скачиваем ChromeDriver 114...")
         url_driver = "https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip"
         os.system("wget -O chromedriver_linux64.zip " + url_driver)
-        os.system("unzip chromedriver_linux64.zip")
-        os.system("chmod +x chromedriver")
-        os.system("sudo mv chromedriver /usr/local/bin/")
 
-        # 5. Проверяем версию
+        # 4. Распаковываем с помощью unzip
+        logger.info("Распаковка chromedriver_linux64.zip...")
+        os.system("unzip -o chromedriver_linux64.zip")
+
+        # 5. Делаем исполняемым и переносим в /usr/bin
+        logger.info("Переносим chromedriver в /usr/bin...")
+        os.system("chmod +x chromedriver")
+        os.system("sudo mv chromedriver /usr/bin/")
+
+        # 6. Проверяем версию
+        logger.info("Проверка версии ChromeDriver:")
         os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
+
         logger.info("Установка/обновление завершена.")
     except Exception as e:
         logger.error(f"Ошибка при установке Chrome/ChromeDriver: {e}")
