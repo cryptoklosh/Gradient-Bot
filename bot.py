@@ -36,7 +36,7 @@ class ColoredFormatter(logging.Formatter):
         message = super().format(record)
         return color + message + Style.RESET_ALL
 
-# Флаг для headless-режима. Для отладки установите HEADLESS = False.
+# Флаг для headless-режима (для отладки установите HEADLESS = False)
 HEADLESS = True
 
 # Баннер
@@ -54,7 +54,7 @@ banner = """
 print(banner)
 time.sleep(1)
 
-# Загрузка переменных окружения
+# Загрузка переменных окружения из .env
 load_dotenv()
 
 # Настройка логгера с цветным форматтером
@@ -66,25 +66,81 @@ formatter = ColoredFormatter("%(asctime)s - %(message)s", "%H:%M:%S")
 console_handler.setFormatter(formatter)
 logger.handlers = [console_handler]
 
-# Константы
+# Константы для расширения приложения
 EXTENSION_ID = "caacbgbklghmpodbdafajbgdnegacfmo"
 CRX_URL = ("https://clients2.google.com/service/update2/crx?"
            "response=redirect&prodversion=98.0.4758.102&acceptformat=crx2,crx3&"
            "x=id%3D{0}%26uc&nacl_arch=x86-64".format(EXTENSION_ID))
 EXTENSION_FILENAME = "app.crx"
 
+def install_chrome_114():
+    """
+    Удаляет старые версии, скачивает и устанавливает Google Chrome 114 и соответствующий ChromeDriver 114.
+    Измените URL, если нужна другая версия.
+    """
+    logger.info("=== Установка/обновление Google Chrome 114 и ChromeDriver 114 ===")
+    try:
+        logger.info("Обновление списков пакетов и установка unzip...")
+        os.system("sudo apt-get update")
+        os.system("sudo apt-get install -y unzip")
+        
+        logger.info("Удаление старых версий Chrome и Chromium...")
+        cmds = [
+            "sudo apt-get remove -y google-chrome-stable google-chrome-beta google-chrome-unstable",
+            "sudo apt-get remove -y chromium-browser chromium-chromedriver",
+            "sudo snap remove chromium",
+            "sudo apt-get autoremove -y"
+        ]
+        for cmd in cmds:
+            os.system(cmd)
+        
+        logger.info("Скачивание Google Chrome 114...")
+        url_chrome = "https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_114.0.5735.90-1_amd64.deb"
+        os.system(f"wget -O chrome114.deb {url_chrome}")
+        
+        logger.info("Установка Google Chrome 114...")
+        os.system("sudo dpkg -i chrome114.deb")
+        os.system("sudo apt-get -f install -y")
+        
+        logger.info("Проверка версии Google Chrome...")
+        os.system("google-chrome --version || echo 'Google Chrome не установлен'")
+        
+        logger.info("Скачивание ChromeDriver 114...")
+        url_driver = "https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip"
+        os.system(f"wget -O chromedriver_linux64.zip {url_driver}")
+        
+        logger.info("Распаковка chromedriver_linux64.zip...")
+        os.system("unzip -o chromedriver_linux64.zip")
+        
+        logger.info("Перемещение chromedriver в /usr/local/bin и установка прав...")
+        os.system("sudo chmod +x chromedriver")
+        os.system("sudo mv chromedriver /usr/local/bin/")
+        
+        logger.info("Проверка версии ChromeDriver:")
+        os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
+        
+        logger.info("Установка/обновление завершена.")
+    except Exception as e:
+        logger.error(f"Ошибка при установке Chrome/ChromeDriver: {e}")
+
+def check_browser_driver():
+    """
+    Проверяет, установлены ли Google Chrome и ChromeDriver, выводит их версии.
+    """
+    logger.info("=== Проверка установленных браузера и драйвера ===")
+    os.system("google-chrome --version || echo 'Google Chrome не установлен'")
+    os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
+
 def load_accounts():
     """
-    Загружает аккаунты из файла accounts.txt.
-    Формат: email:пароль в каждой строке.
-    Если файла нет, использует переменные окружения APP_USER и APP_PASS.
+    Загружает аккаунты из файла accounts.txt или из переменных окружения.
     """
     accounts = []
     if os.path.exists("accounts.txt"):
-        with open("accounts.txt", "r", encoding="utf-8") as f:
+        with open("accounts.txt", "r") as f:
             for line in f:
                 line = line.strip()
-                if line:  # пропускаем пустые строки
+                if line:
                     parts = line.split(":")
                     if len(parts) >= 2:
                         email = parts[0].strip()
@@ -106,124 +162,60 @@ def load_accounts():
 def load_proxies():
     """
     Загружает прокси из файла active_proxies.txt.
-    Каждая строка с непустым значением добавляется в список.
     """
-    proxies_list = []
     if os.path.exists("active_proxies.txt"):
-        with open("active_proxies.txt", "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    proxies_list.append(line)
-        if proxies_list:
-            logger.info(f"Загружено {len(proxies_list)} прокси из active_proxies.txt.")
+        with open("active_proxies.txt", "r") as f:
+            prxs = [line.strip() for line in f if line.strip()]
+        if prxs:
+            logger.info(f"Загружено {len(prxs)} прокси из active_proxies.txt.")
+            return prxs
+    logger.warning("Прокси не найдены в active_proxies.txt. Работаем в режиме прямого соединения.")
+    return [None]
+
+def add_accounts_interactive():
+    """
+    Интерактивное добавление новых аккаунтов в файл accounts.txt.
+    """
+    print("Введите новые аккаунты (формат: email:пароль, один на строку). Пустая строка для завершения:")
+    new_accounts = []
+    while True:
+        entry = input().strip()
+        if not entry:
+            break
+        if ":" in entry:
+            new_accounts.append(entry)
+        else:
+            print("Неверный формат. Используйте email:пароль.")
+    if new_accounts:
+        with open("accounts.txt", "a") as f:
+            for acc in new_accounts:
+                f.write(acc + "\n")
+        logger.info(f"Добавлено {len(new_accounts)} новых аккаунтов.")
     else:
-        logger.warning("Прокси не найдены в active_proxies.txt. Работаем в режиме прямого соединения.")
-        proxies_list = [None]
-    return proxies_list
+        logger.info("Новых аккаунтов не добавлено.")
 
-def save_accounts(new_accounts):
+def add_proxies_interactive():
     """
-    Добавляет новые аккаунты в файл accounts.txt, по одной записи на строку.
+    Интерактивное добавление новых прокси в файл active_proxies.txt.
     """
-    with open("accounts.txt", "a", encoding="utf-8") as f:
-        for account in new_accounts:
-            f.write(f"{account[0]}:{account[1]}\n")
-    logger.info(f"Добавлено {len(new_accounts)} новых аккаунтов в accounts.txt.")
-
-def save_proxies(new_proxies):
-    """
-    Добавляет новые прокси в файл active_proxies.txt, по одной записи на строку.
-    """
-    with open("active_proxies.txt", "a", encoding="utf-8") as f:
-        for proxy in new_proxies:
-            f.write(f"{proxy}\n")
-    logger.info(f"Добавлено {len(new_proxies)} новых прокси в active_proxies.txt.")
-
-# Инициализация прокси и аккаунтов при старте
-accounts = load_accounts()
-proxies = load_proxies()
-
-# Инициализация генератора случайных User-Agent
-ua = UserAgent()
-
-def create_proxy_auth_extension(host, port, username, password, scheme='http', plugin_path='proxy_auth_plugin.zip'):
-    """
-    Создает динамическое расширение для Chrome, задающее прокси с аутентификацией.
-    Возвращает путь к созданному ZIP-архиву расширения.
-    """
-    manifest_json = """
-    {
-      "version": "1.0.0",
-      "manifest_version": 2,
-      "name": "Chrome Proxy Auth Extension",
-      "permissions": [
-        "proxy",
-        "tabs",
-        "unlimitedStorage",
-        "storage",
-        "<all_urls>",
-        "webRequest",
-        "webRequestBlocking"
-      ],
-      "background": {
-        "scripts": ["background.js"]
-      },
-      "minimum_chrome_version": "22.0.0"
-    }
-    """
-    background_js = f"""
-    var config = {{
-        mode: "fixed_servers",
-        rules: {{
-            singleProxy: {{
-                scheme: "{scheme}",
-                host: "{host}",
-                port: parseInt({port})
-            }},
-            bypassList: ["localhost"]
-        }}
-    }};
-    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-    function callbackFn(details) {{
-        return {{
-            authCredentials: {{
-                username: "{username}",
-                password: "{password}"
-            }}
-        }};
-    }}
-    chrome.webRequest.onAuthRequired.addListener(
-        callbackFn,
-        {{urls: ["<all_urls>"]}},
-        ['blocking']
-    );
-    """
-    with zipfile.ZipFile(plugin_path, 'w') as zp:
-        zp.writestr("manifest.json", manifest_json)
-        zp.writestr("background.js", background_js)
-    return plugin_path
-
-def download_extension():
-    """Скачивает расширение для приложения, если оно не скачано."""
-    logger.info(f"Скачивание расширения с: {CRX_URL}")
-    ext_path = Path(EXTENSION_FILENAME)
-    if ext_path.exists() and time.time() - ext_path.stat().st_mtime < 86400:
-        logger.info("Расширение уже скачано, пропускаем скачивание...")
-        return
-    response = requests.get(CRX_URL, headers={"User-Agent": ua.random})
-    if response.status_code == 200:
-        ext_path.write_bytes(response.content)
-        logger.info("Расширение успешно скачано")
+    print("Введите новые прокси (один на строку). Пустая строка для завершения:")
+    new_proxies = []
+    while True:
+        entry = input().strip()
+        if not entry:
+            break
+        new_proxies.append(entry)
+    if new_proxies:
+        with open("active_proxies.txt", "a") as f:
+            for pr in new_proxies:
+                f.write(pr + "\n")
+        logger.info(f"Добавлено {len(new_proxies)} новых прокси.")
     else:
-        logger.error(f"Не удалось скачать расширение: {response.status_code}")
-        exit(1)
+        logger.info("Новых прокси не добавлено.")
 
 def setup_chrome_options(proxy=None):
     """
-    Настраивает ChromeOptions.
-    Если прокси содержит аутентификацию, создается динамическое расширение.
-    Добавлены опции для отключения WebRTC.
+    Настраивает ChromeOptions, включая опции для WebRTC и добавление расширений.
     """
     chrome_options = Options()
     if HEADLESS:
@@ -235,6 +227,8 @@ def setup_chrome_options(proxy=None):
     chrome_options.add_argument("--disable-web-security")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--webrtc-ip-handling-policy=disable_non_proxied_udp")
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    chrome_options.add_argument("--user-data-dir=/tmp/chrome")
     
     if proxy:
         if "@" in proxy:
@@ -266,7 +260,6 @@ def setup_chrome_options(proxy=None):
 def login_to_app(driver, account):
     """
     Производит авторизацию в веб-приложении.
-    account: (email, пароль)
     """
     email, password = account
     driver.get("https://app.gradient.network/")
@@ -282,19 +275,17 @@ def login_to_app(driver, account):
     logger.info(f"Успешная авторизация для аккаунта: {email}")
 
 def open_extension(driver):
-    """Открывает расширение Chrome."""
-    # Можно добавить дополнительное время ожидания, если требуется больше времени
+    """Открывает расширение Chrome с увеличенным временем ожидания."""
     time.sleep(5)
     driver.get(f"chrome-extension://{EXTENSION_ID}/popup.html")
-    WebDriverWait(driver, 30).until(
+    WebDriverWait(driver, 120).until(
         EC.presence_of_element_located((By.XPATH, '//div[contains(text(), "Status")]'))
     )
     logger.info("Расширение загружено успешно")
 
 def get_chromedriver_path():
     """
-    Возвращает путь к ChromeDriver.
-    При ошибке очищает кэш и повторяет попытку.
+    Возвращает путь к ChromeDriver с помощью webdriver-manager.
     """
     try:
         driver_path = ChromeDriverManager().install()
@@ -311,10 +302,7 @@ def get_chromedriver_path():
 
 def attempt_connection(proxy, account):
     """
-    Пытается установить соединение с использованием прокси и аккаунта.
-    Если proxy равен None, подключается без прокси.
-    Иначе перебирает варианты из списка прокси.
-    Возвращает объект driver при успешном подключении или None.
+    Пытается установить соединение с использованием заданного прокси и аккаунта.
     """
     if proxy is None:
         try:
@@ -363,7 +351,6 @@ def attempt_connection(proxy, account):
 def worker(account, proxy, node_index):
     """
     Функция-воркер для выполнения задач для конкретного аккаунта.
-    node_index – порядковый номер ноды для этого аккаунта.
     """
     driver = attempt_connection(proxy, account)
     if driver:
@@ -379,54 +366,18 @@ def worker(account, proxy, node_index):
     else:
         logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Не удалось подключиться. Переход к следующему.")
 
-def add_accounts():
-    """
-    Интерактивное добавление новых аккаунтов.
-    Пользователь вводит аккаунты в формате "email:пароль". Пустые строки пропускаются.
-    """
-    print("\nВведите новые аккаунты (один на строку, в формате email:пароль). Введите пустую строку для завершения:")
-    new_accounts = []
-    while True:
-        entry = input().strip()
-        if not entry:
-            break
-        if ":" in entry:
-            parts = entry.split(":")
-            email = parts[0].strip()
-            password = ":".join(parts[1:]).strip()
-            if email and password:
-                new_accounts.append((email, password))
-        else:
-            print("Неверный формат. Используйте формат email:пароль.")
-    if new_accounts:
-        save_accounts(new_accounts)
-    else:
-        print("Нет новых аккаунтов для добавления.")
-
-def add_proxies():
-    """
-    Интерактивное добавление новых прокси.
-    Пользователь вводит прокси по одному на строку. Пустые строки пропускаются.
-    """
-    print("\nВведите новые прокси (один на строку). Введите пустую строку для завершения:")
-    new_proxies = []
-    while True:
-        entry = input().strip()
-        if not entry:
-            break
-        new_proxies.append(entry)
-    if new_proxies:
-        save_proxies(new_proxies)
-    else:
-        print("Нет новых прокси для добавления.")
-
 def management_interface(accounts):
     """
-    Основное меню управления.
-    Предлагает запустить бота (с прокси/без) для одного или всех аккаунтов,
-    а также добавить новые аккаунты или прокси.
+    Интерактивное меню для управления ботом:
+      1. Запуск бота для одного аккаунта (с прокси)
+      2. Запуск бота для одного аккаунта (без прокси)
+      3. Запуск бота для всех аккаунтов (с прокси)
+      4. Запуск бота для всех аккаунтов (без прокси)
+      5. Добавить новые аккаунты
+      6. Добавить новые прокси
+      7. Проверить/Установить Google Chrome и ChromeDriver
+      8. Выход
     """
-    global proxies  # Объявляем глобальную переменную, чтобы изменения сохранялись
     while True:
         print("\nМеню управления:")
         print("1. Запустить бота для одного аккаунта (с прокси)")
@@ -435,8 +386,9 @@ def management_interface(accounts):
         print("4. Запустить бота для всех аккаунтов (без прокси)")
         print("5. Добавить новые аккаунты")
         print("6. Добавить новые прокси")
-        print("7. Выход")
-        choice = input("Выберите опцию (1-7): ").strip()
+        print("7. Проверить/Установить Google Chrome и ChromeDriver")
+        print("8. Выход")
+        choice = input("Выберите опцию (1-8): ").strip()
         if choice == "1":
             print("\nСписок аккаунтов:")
             for idx, account in enumerate(accounts, start=1):
@@ -566,14 +518,23 @@ def management_interface(accounts):
                 logger.info("Остановка всех воркеров по запросу пользователя.")
                 break
         elif choice == "5":
-            add_accounts()
-            # Перезагружаем аккаунты после добавления
-            accounts[:] = load_accounts()
+            add_accounts_interactive()
+            accounts = load_accounts()
         elif choice == "6":
-            add_proxies()
-            # Перезагружаем прокси после добавления
-            proxies[:] = load_proxies()
+            add_proxies_interactive()
+            proxies = load_proxies()
         elif choice == "7":
+            print("\nМеню проверки и установки браузера и драйвера:")
+            print("1. Проверить установленные Google Chrome и ChromeDriver")
+            print("2. Установить Google Chrome 114 и ChromeDriver 114")
+            sub_choice = input("Выберите опцию (1-2): ").strip()
+            if sub_choice == "1":
+                check_browser_driver()
+            elif sub_choice == "2":
+                install_chrome_114()
+            else:
+                print("Неверный выбор.")
+        elif choice == "8":
             print("Выход из программы.")
             exit(0)
         else:
@@ -581,6 +542,8 @@ def management_interface(accounts):
 
 def main():
     accounts = load_accounts()
+    global proxies
+    proxies = load_proxies()
     management_interface(accounts)
 
 if __name__ == "__main__":
