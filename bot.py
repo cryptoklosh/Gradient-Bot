@@ -21,6 +21,7 @@ from colorama import Fore, Style
 
 # Инициализация colorama для цветного логирования
 colorama.init(autoreset=True)
+
 # Кастомный форматтер для логов с цветами
 class ColoredFormatter(logging.Formatter):
     COLORS = {
@@ -139,8 +140,7 @@ def save_proxies(new_proxies):
             f.write(f"{proxy}\n")
     logger.info(f"Добавлено {len(new_proxies)} новых прокси в active_proxies.txt.")
 
-# Инициализация генератора случайных User-Agent
-from fake_useragent import UserAgent
+# Глобальный генератор User-Agent
 ua = UserAgent()
 
 def create_proxy_auth_extension(host, port, username, password, scheme='http', plugin_path='proxy_auth_plugin.zip'):
@@ -192,7 +192,7 @@ function callbackFn(details) {{
 chrome.webRequest.onAuthRequired.addListener(
     callbackFn,
     {{urls: ["<all_urls>"]}},
-    ['blocking']
+    ["blocking"]
 );
 """
     with zipfile.ZipFile(plugin_path, 'w') as zp:
@@ -215,12 +215,67 @@ def download_extension():
         logger.error(f"Не удалось скачать расширение: {response.status_code}")
         exit(1)
 
+def install_chrome_114():
+    """
+    Удаляет старые версии, устанавливает необходимые утилиты, затем скачивает и устанавливает Google Chrome 114 и ChromeDriver 114.
+    """
+    logger.info("=== Установка/обновление Google Chrome 114 и ChromeDriver 114 ===")
+    try:
+        # 0. Обновление пакетов и установка утилит
+        logger.info("Обновляем списки пакетов и устанавливаем wget, unzip и curl...")
+        os.system("sudo apt-get update")
+        os.system("sudo apt-get install -y wget unzip curl")
+        
+        # 1. Удаление старых версий
+        logger.info("Удаляем старые версии Chrome и Chromium...")
+        cmds = [
+            "sudo apt-get remove -y google-chrome-stable google-chrome-beta google-chrome-unstable",
+            "sudo apt-get remove -y chromium-browser chromium-chromedriver",
+            "sudo snap remove chromium",
+            "sudo apt-get autoremove -y"
+        ]
+        for cmd in cmds:
+            os.system(cmd)
+        
+        # 2. Скачивание и установка Google Chrome 114
+        logger.info("Скачиваем Google Chrome 114...")
+        url_chrome = "https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_114.0.5735.90-1_amd64.deb"
+        os.system(f"wget -O chrome114.deb {url_chrome}")
+        logger.info("Устанавливаем Google Chrome 114...")
+        os.system("sudo dpkg -i chrome114.deb")
+        os.system("sudo apt-get -f install -y")
+        logger.info("Проверка версии Google Chrome:")
+        os.system("google-chrome --version || echo 'Google Chrome не установлен'")
+        
+        # 3. Скачивание и установка ChromeDriver 114
+        logger.info("Скачиваем ChromeDriver 114...")
+        url_driver = "https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip"
+        os.system(f"wget -O chromedriver_linux64.zip {url_driver}")
+        logger.info("Распаковываем ChromeDriver...")
+        os.system("unzip -o chromedriver_linux64.zip")
+        logger.info("Делаем chromedriver исполняемым и перемещаем в /usr/local/bin...")
+        os.system("sudo chmod +x chromedriver")
+        os.system("sudo mv chromedriver /usr/local/bin/")
+        logger.info("Проверка версии ChromeDriver:")
+        os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
+        
+        logger.info("Установка/обновление завершена.")
+    except Exception as e:
+        logger.error(f"Ошибка при установке Chrome/ChromeDriver: {e}")
+
+def check_browser_driver():
+    """
+    Проверяет, установлены ли Google Chrome и ChromeDriver, и выводит их версии.
+    """
+    logger.info("=== Проверка установленных Google Chrome и ChromeDriver ===")
+    os.system("google-chrome --version || echo 'Google Chrome не установлен'")
+    os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
+
 def setup_chrome_options(proxy=None):
     """
-    Настраивает ChromeOptions.
-    Если прокси содержит аутентификацию, создается динамическое расширение.
-    Добавлены опции для отключения WebRTC.
+    Настраивает ChromeOptions, включая опции для WebRTC и добавление расширений.
     """
+    global ua
     chrome_options = Options()
     if HEADLESS:
         chrome_options.add_argument("--headless=new")
@@ -306,14 +361,6 @@ def get_chromedriver_path():
         driver_path = ChromeDriverManager().install()
         return driver_path
 
-def check_browser_driver():
-    """
-    Проверяет, установлены ли Google Chrome и ChromeDriver, и выводит их версии.
-    """
-    logger.info("=== Проверка установленных Google Chrome и ChromeDriver ===")
-    os.system("google-chrome --version || echo 'Google Chrome не установлен'")
-    os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
-
 def attempt_connection(proxy, account):
     """
     Пытается установить соединение с использованием прокси и аккаунта.
@@ -338,6 +385,7 @@ def attempt_connection(proxy, account):
                 pass
             return None
     else:
+        global proxies
         available_proxies = proxies.copy()
         if proxy in available_proxies:
             available_proxies.remove(proxy)
@@ -361,7 +409,7 @@ def attempt_connection(proxy, account):
                 except Exception:
                     pass
                 logger.info("Пробуем следующий вариант прокси...")
-        logger.error(f"Не удалось установить соединение для аккаунта {account[0]} ни через один из вариантов прокси.")
+        logger.error(f"Не удалось установить подключение для аккаунта {account[0]} ни через один из вариантов прокси.")
         return None
 
 def worker(account, proxy, node_index):
@@ -485,7 +533,7 @@ def management_interface(accounts):
                         print("Неверное значение. Задержка установлена в 0 секунд.")
                     logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий с прокси {chosen_proxy if chosen_proxy else 'Direct mode'} с задержкой {delay} сек.")
                     with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             proxy_for_node = chosen_proxy if same_proxy else random.choice(proxies)
                             executor.submit(worker, selected_account, proxy_for_node, node)
                             time.sleep(delay)
@@ -516,7 +564,7 @@ def management_interface(accounts):
                         print("Неверное значение. Задержка установлена в 0 секунд.")
                     logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий без прокси с задержкой {delay} сек.")
                     with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             executor.submit(worker, selected_account, None, node)
                             time.sleep(delay)
                 else:
@@ -541,7 +589,7 @@ def management_interface(accounts):
                 with ThreadPoolExecutor(max_workers=min(len(accounts)*sessions, 5)) as executor:
                     futures = []
                     for account in accounts:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             chosen_proxy = random.choice(proxies)
                             futures.append(executor.submit(worker, account, chosen_proxy, node))
                             time.sleep(delay)
@@ -568,7 +616,7 @@ def management_interface(accounts):
                 with ThreadPoolExecutor(max_workers=len(accounts)*sessions) as executor:
                     futures = []
                     for account in accounts:
-                        for node in range(1, sessions+1):
+                        for node in range(1, sessions + 1):
                             futures.append(executor.submit(worker, account, None, node))
                             time.sleep(delay)
                     for future in as_completed(futures):
