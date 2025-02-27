@@ -11,7 +11,7 @@
 
 ## Требования
 
-- **Python 3.6+**
+- **Python 3.9+**
 - **Google Chrome** (или Chromium)
 - **ChromeDriver** (подходящий версии браузера)
 - Системные утилиты: `wget`, `unzip`, `curl`
