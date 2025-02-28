@@ -42,11 +42,11 @@ HEADLESS = True
 # Баннер
 banner = """
  _   _           _  _____      
-| \\ | |         | ||____ |     
-|  \\| | ___   __| |    / /_ __ 
-| . ` |/ _ \\ / _` |    \\ \\ '__|
-| |\\  | (_) | (_| |.___/ / |   
-\\_| \\_/\\___/ \\__,_|\\____/|_|   
+| \ | |         | ||____ |     
+|  \| | ___   __| |    / /_ __ 
+| . ` |/ _ \ / _` |    \ \ '__|
+| |\  | (_) | (_| |.___/ / |   
+\_| \_/\___/ \__,_|\\____/|_|   
                                
 Менеджер Gradient Bot
     @nod3r - Мультиаккаунт версия
@@ -180,7 +180,7 @@ var config = {{
         bypassList: ["localhost"]
     }}
 }};
-chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+chrome.proxy.settings.set({{value: config, scope: "regular"}}, function(){{}});
 function callbackFn(details) {{
     return {{
         authCredentials: {{
@@ -207,7 +207,7 @@ def download_extension():
     if ext_path.exists() and time.time() - ext_path.stat().st_mtime < 86400:
         logger.info("Расширение уже скачано, пропускаем скачивание...")
         return
-    response = requests.get(CRX_URL, headers={"User-Agent": ua.random})
+    response = requests.get(CRX_URL, headers={"User-Agent": ua.random}, timeout=300)
     if response.status_code == 200:
         ext_path.write_bytes(response.content)
         logger.info("Расширение успешно скачано")
@@ -221,12 +221,10 @@ def install_chrome_114():
     """
     logger.info("=== Установка/обновление Google Chrome 114 и ChromeDriver 114 ===")
     try:
-        # 0. Обновление пакетов и установка утилит
         logger.info("Обновляем списки пакетов и устанавливаем wget, unzip и curl...")
         os.system("sudo apt-get update")
         os.system("sudo apt-get install -y wget unzip curl")
         
-        # 1. Удаление старых версий
         logger.info("Удаляем старые версии Chrome и Chromium...")
         cmds = [
             "sudo apt-get remove -y google-chrome-stable google-chrome-beta google-chrome-unstable",
@@ -237,7 +235,6 @@ def install_chrome_114():
         for cmd in cmds:
             os.system(cmd)
         
-        # 2. Скачивание и установка Google Chrome 114
         logger.info("Скачиваем Google Chrome 114...")
         url_chrome = "https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_114.0.5735.90-1_amd64.deb"
         os.system(f"wget -O chrome114.deb {url_chrome}")
@@ -247,7 +244,6 @@ def install_chrome_114():
         logger.info("Проверка версии Google Chrome:")
         os.system("google-chrome --version || echo 'Google Chrome не установлен'")
         
-        # 3. Скачивание и установка ChromeDriver 114
         logger.info("Скачиваем ChromeDriver 114...")
         url_driver = "https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip"
         os.system(f"wget -O chromedriver_linux64.zip {url_driver}")
@@ -274,6 +270,7 @@ def check_browser_driver():
 def setup_chrome_options(proxy=None):
     """
     Настраивает ChromeOptions, включая опции для WebRTC и добавление расширений.
+    Теперь независимо от того, используется ли прокси, основное расширение приложения добавляется.
     """
     global ua
     chrome_options = Options()
@@ -301,17 +298,17 @@ def setup_chrome_options(proxy=None):
         else:
             chrome_options.add_argument("--proxy-server=" + proxy)
             logger.info(f"Используется прокси: {proxy}")
-        logger.info("Прокси используется, пропускаем загрузку основного расширения приложения.")
+    
+    # Всегда добавляем основное расширение приложения
+    ext_path = Path(EXTENSION_FILENAME).resolve()
+    if ext_path.exists():
+        chrome_options.add_extension(str(ext_path))
     else:
-        logger.info("Режим прямого соединения (без прокси).")
-        ext_path = Path(EXTENSION_FILENAME).resolve()
-        if ext_path.exists():
-            chrome_options.add_extension(str(ext_path))
-        else:
-            logger.warning("Расширение для приложения не найдено.")
+        logger.warning("Расширение для приложения не найдено.")
     
     chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
     chrome_options.add_experimental_option('useAutomationExtension', False)
+    
     return chrome_options
 
 def login_to_app(driver, account):
@@ -321,7 +318,7 @@ def login_to_app(driver, account):
     """
     email, password = account
     driver.get("https://app.gradient.network/")
-    WebDriverWait(driver, 30).until(
+    WebDriverWait(driver, 300).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, '[placeholder="Enter Email"]'))
     )
     driver.find_element(By.CSS_SELECTOR, '[placeholder="Enter Email"]').send_keys(email)
@@ -332,17 +329,24 @@ def login_to_app(driver, account):
     )
     logger.info(f"Успешная авторизация для аккаунта: {email}")
 
-def open_extension(driver):
-    """Открывает расширение Gradient (Chrome) с увеличенным временем ожидания."""
-    time.sleep(5)
-    try:
-        driver.get(f"chrome-extension://{EXTENSION_ID}/popup.html")
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.XPATH, '//div[contains(text(), "Status")]'))
-        )
-        logger.info("Расширение загружено успешно")
-    except Exception as e:
-        logger.warning(f"Не удалось открыть расширение: {e}")
+def open_extension(driver, max_retries=3):
+    """
+    Открывает расширение Gradient (Chrome) с увеличенным временем ожидания.
+    Делает несколько попыток, если не получается.
+    """
+    for attempt in range(1, max_retries + 1):
+        time.sleep(10)  # даём время для полной загрузки расширения
+        try:
+            driver.get(f"chrome-extension://{EXTENSION_ID}/popup.html")
+            WebDriverWait(driver, 300).until(
+                EC.presence_of_element_located((By.XPATH, '//div[contains(text(), "Status")]'))
+            )
+            logger.info("Расширение загружено успешно")
+            return
+        except Exception as e:
+            logger.warning(f"Попытка {attempt} открытия расширения не удалась: {e}")
+    logger.error("Не удалось открыть расширение после нескольких попыток")
+    raise Exception("Не удалось открыть расширение")
 
 def get_chromedriver_path():
     """
@@ -361,6 +365,14 @@ def get_chromedriver_path():
         driver_path = ChromeDriverManager().install()
         return driver_path
 
+def check_browser_driver():
+    """
+    Проверяет, установлены ли Google Chrome и ChromeDriver, и выводит их версии.
+    """
+    logger.info("=== Проверка установленных Google Chrome и ChromeDriver ===")
+    os.system("google-chrome --version || echo 'Google Chrome не установлен'")
+    os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
+
 def attempt_connection(proxy, account):
     """
     Пытается установить соединение с использованием прокси и аккаунта.
@@ -372,6 +384,9 @@ def attempt_connection(proxy, account):
             chrome_options = setup_chrome_options(None)
             driver_path = get_chromedriver_path()
             driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+            # Устанавливаем дополнительные таймауты
+            driver.set_page_load_timeout(300)
+            driver.set_script_timeout(300)
             download_extension()
             login_to_app(driver, account)
             open_extension(driver)
@@ -397,6 +412,8 @@ def attempt_connection(proxy, account):
                 chrome_options = setup_chrome_options(pr)
                 driver_path = get_chromedriver_path()
                 driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+                driver.set_page_load_timeout(300)
+                driver.set_script_timeout(300)
                 download_extension()
                 login_to_app(driver, account)
                 open_extension(driver)
@@ -409,7 +426,7 @@ def attempt_connection(proxy, account):
                 except Exception:
                     pass
                 logger.info("Пробуем следующий вариант прокси...")
-        logger.error(f"Не удалось установить подключение для аккаунта {account[0]} ни через один из вариантов прокси.")
+        logger.error(f"Не удалось установить соединение для аккаунта {account[0]} ни через один из вариантов прокси.")
         return None
 
 def worker(account, proxy, node_index):
@@ -533,7 +550,7 @@ def management_interface(accounts):
                         print("Неверное значение. Задержка установлена в 0 секунд.")
                     logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий с прокси {chosen_proxy if chosen_proxy else 'Direct mode'} с задержкой {delay} сек.")
                     with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions + 1):
+                        for node in range(1, sessions+1):
                             proxy_for_node = chosen_proxy if same_proxy else random.choice(proxies)
                             executor.submit(worker, selected_account, proxy_for_node, node)
                             time.sleep(delay)
@@ -564,7 +581,7 @@ def management_interface(accounts):
                         print("Неверное значение. Задержка установлена в 0 секунд.")
                     logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий без прокси с задержкой {delay} сек.")
                     with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions + 1):
+                        for node in range(1, sessions+1):
                             executor.submit(worker, selected_account, None, node)
                             time.sleep(delay)
                 else:
@@ -589,7 +606,7 @@ def management_interface(accounts):
                 with ThreadPoolExecutor(max_workers=min(len(accounts)*sessions, 5)) as executor:
                     futures = []
                     for account in accounts:
-                        for node in range(1, sessions + 1):
+                        for node in range(1, sessions+1):
                             chosen_proxy = random.choice(proxies)
                             futures.append(executor.submit(worker, account, chosen_proxy, node))
                             time.sleep(delay)
@@ -616,7 +633,7 @@ def management_interface(accounts):
                 with ThreadPoolExecutor(max_workers=len(accounts)*sessions) as executor:
                     futures = []
                     for account in accounts:
-                        for node in range(1, sessions + 1):
+                        for node in range(1, sessions+1):
                             futures.append(executor.submit(worker, account, None, node))
                             time.sleep(delay)
                     for future in as_completed(futures):
