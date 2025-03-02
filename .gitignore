@@ -1,3 +1,5 @@
 accounts.txt
 active_proxies.txt
 .env
+checked_proxies.txt
+proxies.txt
