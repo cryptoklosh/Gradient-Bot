@@ -438,7 +438,7 @@ def worker(account, proxy, node_index):
                 # (Если HEADLESS=False, можно визуально увидеть эти действия)
                 try:
                     driver.refresh()
-                    time.sleep(2)
+                    time.sleep(1000)
                     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                     logger.info("Имитация активности: страница обновлена и прокручена вниз.")
                 except Exception:
