@@ -16,13 +16,31 @@ from dotenv import load_dotenv
 from pathlib import Path
 from fake_useragent import UserAgent
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import shutil
 import colorama
 from colorama import Fore, Style
 
 # Инициализация colorama для цветного логирования
 colorama.init(autoreset=True)
 
-# Кастомный форматтер для логов с цветами
+# Конфигурация параметров
+CONFIG = {
+    "PAGE_LOAD_TIMEOUT": 30,
+    "SCRIPT_TIMEOUT": 30,
+    "ELEMENT_WAIT_TIMEOUT": 30,
+    "EXTENSION_WAIT": 30,
+    "STATUS_CHECK_INTERVAL_MIN": 1800,   # 30 минут
+    "STATUS_CHECK_INTERVAL_MAX": 5400,   # 90 минут
+    "TASK_INTERVAL_MIN": 20,
+    "TASK_INTERVAL_MAX": 40,
+    "RETRY_INTERVAL": 5,
+    "PROXY_RELOAD_INTERVAL": 60,
+    "MAX_THREADS": 17,
+    "PROXY_THRESHOLD": 10   # Максимальный допустимый ping (сек.)
+}
+
+# Логирование
 class ColoredFormatter(logging.Formatter):
     COLORS = {
         logging.DEBUG: Fore.CYAN,
@@ -36,28 +54,24 @@ class ColoredFormatter(logging.Formatter):
         message = super().format(record)
         return color + message + Style.RESET_ALL
 
-# Флаг для headless-режима. Если требуется работать с UI расширения – установите HEADLESS = False.
 HEADLESS = True
 
-# Баннер
 banner = r"""
- _   _           _  _____      
-| \ | |         | ||____ |     
-|  \| | ___   __| |    / /_ __ 
+ _   _           _  _____
+| \ | |         | ||____ |
+|  \| | ___   __| |    / /_ __
 | . ` |/ _ \ / _` |    \ \ '__|
-| |\  | (_) | (_| |.___/ / |   
-\_| \_/\___/ \__,_|\____/|_|   
-                               
+| |\  | (_) | (_| |.___/ / |
+\_| \_/\___/ \__,_|\____/|_|
+
 Менеджер Gradient Bot
     @nod3r - Мультиаккаунт версия
 """
 print(banner)
 time.sleep(1)
 
-# Загрузка переменных окружения из .env
 load_dotenv()
 
-# Настройка логгера с цветным форматтером
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 console_handler = logging.StreamHandler()
@@ -66,19 +80,23 @@ formatter = ColoredFormatter("%(asctime)s - %(message)s", "%H:%M:%S")
 console_handler.setFormatter(formatter)
 logger.handlers = [console_handler]
 
-# Константы для расширения приложения
 EXTENSION_ID = "caacbgbklghmpodbdafajbgdnegacfmo"
 CRX_URL = ("https://clients2.google.com/service/update2/crx?"
            "response=redirect&prodversion=98.0.4758.102&acceptformat=crx2,crx3&"
            "x=id%3D{0}%26uc&nacl_arch=x86-64".format(EXTENSION_ID))
 EXTENSION_FILENAME = "app.crx"
 
+ua = UserAgent()
+
+# Блокировки
+proxies_lock = threading.Lock()
+chromedriver_lock = threading.Lock()
+
+# Исключение для таймаута рендера расширения
+class RendererTimeoutError(Exception):
+    pass
+
 def load_accounts():
-    """
-    Загружает аккаунты из файла accounts.txt.
-    Формат: email:пароль в каждой строке.
-    Если файла нет, использует переменные окружения APP_USER и APP_PASS.
-    """
     accounts = []
     if os.path.exists("accounts.txt"):
         with open("accounts.txt", "r", encoding="utf-8") as f:
@@ -104,10 +122,6 @@ def load_accounts():
     return accounts
 
 def load_proxies():
-    """
-    Загружает прокси из файла active_proxies.txt.
-    Каждая непустая строка добавляется в список.
-    """
     proxies_list = []
     if os.path.exists("active_proxies.txt"):
         with open("active_proxies.txt", "r", encoding="utf-8") as f:
@@ -122,32 +136,20 @@ def load_proxies():
         proxies_list = [None]
     return proxies_list
 
-def save_accounts(new_accounts):
-    """
-    Добавляет новые аккаунты в файл accounts.txt, по одной записи на строку.
-    """
-    with open("accounts.txt", "a", encoding="utf-8") as f:
-        for account in new_accounts:
-            f.write(f"{account[0]}:{account[1]}\n")
-    logger.info(f"Добавлено {len(new_accounts)} новых аккаунтов в accounts.txt.")
-
-def save_proxies(new_proxies):
-    """
-    Добавляет новые прокси в файл active_proxies.txt, по одной записи на строку.
-    """
-    with open("active_proxies.txt", "a", encoding="utf-8") as f:
-        for proxy in new_proxies:
+def update_proxies_file(proxies_list):
+    with open("active_proxies.txt", "w", encoding="utf-8") as f:
+        for proxy in proxies_list:
             f.write(f"{proxy}\n")
-    logger.info(f"Добавлено {len(new_proxies)} новых прокси в active_proxies.txt.")
+    logger.info("Файл прокси обновлён.")
 
-# Глобальный генератор User-Agent
-ua = UserAgent()
+def reload_proxies(proxies_list):
+    if not proxies_list:
+        logger.warning("Список прокси пуст. Ждём обновления...")
+        time.sleep(CONFIG["PROXY_RELOAD_INTERVAL"])
+        return load_proxies()
+    return proxies_list
 
 def create_proxy_auth_extension(host, port, username, password, scheme='http', plugin_path='proxy_auth_plugin.zip'):
-    """
-    Создает динамическое расширение для Chrome, задающее прокси с аутентификацией.
-    Возвращает путь к созданному ZIP-архиву расширения.
-    """
     manifest_json = """
 {
   "version": "1.0.0",
@@ -201,32 +203,28 @@ chrome.webRequest.onAuthRequired.addListener(
     return plugin_path
 
 def download_extension():
-    """Скачивает расширение для приложения, если оно не скачано или устарело."""
     logger.info(f"Скачивание расширения с: {CRX_URL}")
     ext_path = Path(EXTENSION_FILENAME)
     if ext_path.exists() and time.time() - ext_path.stat().st_mtime < 86400:
         logger.info("Расширение уже скачано, пропускаем скачивание...")
         return
-    response = requests.get(CRX_URL, headers={"User-Agent": ua.random})
-    if response.status_code == 200:
-        ext_path.write_bytes(response.content)
-        logger.info("Расширение успешно скачано")
-    else:
-        logger.error(f"Не удалось скачать расширение: {response.status_code}")
+    try:
+        response = requests.get(CRX_URL, headers={"User-Agent": ua.random}, timeout=10)
+        if response.status_code == 200:
+            ext_path.write_bytes(response.content)
+            logger.info("Расширение успешно скачано")
+        else:
+            logger.error(f"Не удалось скачать расширение: {response.status_code}")
+            exit(1)
+    except Exception as e:
+        logger.error(f"Ошибка при скачивании расширения: {e}")
         exit(1)
 
 def install_chrome_114():
-    """
-    Устанавливает необходимые утилиты, удаляет старые версии,
-    скачивает и устанавливает Google Chrome 114 и ChromeDriver 114 (для Linux).
-    """
     logger.info("=== Установка/обновление Google Chrome 114 и ChromeDriver 114 (Linux) ===")
     try:
-        logger.info("Обновляем списки пакетов и устанавливаем wget, unzip и curl...")
         os.system("sudo apt-get update")
         os.system("sudo apt-get install -y wget unzip curl")
-        
-        logger.info("Удаляем старые версии Chrome и Chromium...")
         cmds = [
             "sudo apt-get remove -y google-chrome-stable google-chrome-beta google-chrome-unstable",
             "sudo apt-get remove -y chromium-browser chromium-chromedriver",
@@ -235,47 +233,29 @@ def install_chrome_114():
         ]
         for cmd in cmds:
             os.system(cmd)
-        
-        logger.info("Скачиваем Google Chrome 114...")
         url_chrome = "https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_114.0.5735.90-1_amd64.deb"
         os.system(f"wget -O chrome114.deb {url_chrome}")
-        logger.info("Устанавливаем Google Chrome 114...")
         os.system("sudo dpkg -i chrome114.deb")
         os.system("sudo apt-get -f install -y")
-        logger.info("Проверка версии Google Chrome:")
         os.system("google-chrome --version || echo 'Google Chrome не установлен'")
-        
-        logger.info("Скачиваем ChromeDriver 114...")
         url_driver = "https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip"
         os.system(f"wget -O chromedriver_linux64.zip {url_driver}")
-        logger.info("Распаковываем ChromeDriver...")
         os.system("unzip -o chromedriver_linux64.zip")
-        logger.info("Делаем chromedriver исполняемым и перемещаем в /usr/local/bin...")
         os.system("sudo chmod +x chromedriver")
         os.system("sudo mv chromedriver /usr/local/bin/")
-        logger.info("Проверка версии ChromeDriver:")
         os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
-        
         logger.info("Установка/обновление завершена.")
     except Exception as e:
         logger.error(f"Ошибка при установке Chrome/ChromeDriver: {e}")
 
 def check_browser_driver():
-    """
-    Проверяет, установлены ли Google Chrome и ChromeDriver, и выводит их версии.
-    """
-    logger.info("=== Проверка установленных Google Chrome и ChromeDriver ===")
     os.system("google-chrome --version || echo 'Google Chrome не установлен'")
     os.system("chromedriver --version || echo 'ChromeDriver не установлен'")
 
 def setup_chrome_options(proxy=None):
-    """
-    Настраивает ChromeOptions, включая опции для WebRTC и добавление расширений.
-    """
     global ua
     chrome_options = Options()
     if HEADLESS:
-        # Используем "--headless=new" для более стабильного headless-режима в последних версиях Chrome
         chrome_options.add_argument("--headless=new")
     chrome_options.add_argument(f"user-agent={ua.random}")
     chrome_options.add_argument("--window-size=1920,1080")
@@ -284,98 +264,102 @@ def setup_chrome_options(proxy=None):
     chrome_options.add_argument("--disable-web-security")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--webrtc-ip-handling-policy=disable_non_proxied_udp")
-    # Некоторые флаги, помогающие избежать проблем на Linux
     chrome_options.add_argument("--disable-features=VizDisplayCompositor")
-    
+    chrome_options.add_argument("--disable-background-timer-throttling")
+    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+    chrome_options.add_argument("--disable-renderer-backgrounding")
+
     if proxy:
         if "@" in proxy:
             parsed = urlparse(proxy)
-            scheme = parsed.scheme
-            username = parsed.username
-            password = parsed.password
-            host = parsed.hostname
-            port = parsed.port
-            plugin_path = create_proxy_auth_extension(host, port, username, password, scheme)
+            plugin_path = create_proxy_auth_extension(
+                parsed.hostname, parsed.port, parsed.username, parsed.password, parsed.scheme
+            )
             chrome_options.add_extension(plugin_path)
             logger.info(f"Динамическое расширение для прокси создано для: {proxy}")
         else:
             chrome_options.add_argument("--proxy-server=" + proxy)
             logger.info(f"Используется прокси: {proxy}")
-        logger.info("Прокси используется, пропускаем загрузку основного расширения приложения.")
     else:
         logger.info("Режим прямого соединения (без прокси).")
 
-    # Добавляем расширение для приложения (если найдено)
     ext_path = Path(EXTENSION_FILENAME).resolve()
     if ext_path.exists():
         chrome_options.add_extension(str(ext_path))
         logger.info("Основное расширение загружено.")
     else:
         logger.warning("Расширение для приложения не найдено.")
-    
-    # Скрываем автоматизацию
+
     chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     return chrome_options
 
 def login_to_app(driver, account):
-    """
-    Производит авторизацию в веб-приложении.
-    account: (email, пароль)
-    """
+    if not isinstance(account, tuple) or len(account) < 2:
+        logger.error(f"Неверный формат аккаунта: {account}")
+        return
     email, password = account
     driver.get("https://app.gradient.network/")
-    WebDriverWait(driver, 300).until(
+    WebDriverWait(driver, CONFIG["ELEMENT_WAIT_TIMEOUT"]).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, '[placeholder="Enter Email"]'))
     )
     driver.find_element(By.CSS_SELECTOR, '[placeholder="Enter Email"]').send_keys(email)
     driver.find_element(By.CSS_SELECTOR, '[type="password"]').send_keys(password)
     driver.find_element(By.CSS_SELECTOR, "button").click()
-    WebDriverWait(driver, 300).until(
+    WebDriverWait(driver, CONFIG["ELEMENT_WAIT_TIMEOUT"]).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, 'a[href="/dashboard/setting"]'))
     )
     logger.info(f"Успешная авторизация для аккаунта: {email}")
 
 def open_extension(driver):
-    """
-    Открывает расширение Gradient (Chrome) с сокращенным временем ожидания.
-    Если браузер в headless-режиме, пропускаем открытие, т.к. UI недоступен.
-    """
     if HEADLESS:
         logger.info("Headless-режим: пропуск открытия расширения.")
         return
-    time.sleep(5)
+    time.sleep(CONFIG["EXTENSION_WAIT"])
     try:
         driver.get(f"chrome-extension://{EXTENSION_ID}/popup.html")
-        WebDriverWait(driver, 30).until(
+        WebDriverWait(driver, CONFIG["ELEMENT_WAIT_TIMEOUT"]).until(
             EC.presence_of_element_located((By.XPATH, '//div[contains(text(), "Status")]'))
         )
         logger.info("Расширение загружено успешно")
     except Exception as e:
         logger.warning(f"Не удалось открыть расширение: {e}")
 
-def get_chromedriver_path():
-    """
-    Возвращает путь к ChromeDriver с помощью webdriver-manager.
-    """
+def check_gradient_status(driver):
     try:
-        driver_path = ChromeDriverManager().install()
-        return driver_path
+        driver.get(f"chrome-extension://{EXTENSION_ID}/popup.html")
+        # Устанавливаем таймаут 200 секунд для рендера расширения
+        status_element = WebDriverWait(driver, 200).until(
+            EC.presence_of_element_located((By.XPATH, '//div[contains(text(), "Status")]'))
+        )
+        status_text = status_element.text
+        logger.info(f"Проверка статуса расширения: {status_text}")
+        return status_text
     except Exception as e:
-        logger.error(f"Ошибка при установке ChromeDriver: {e}. Очищаем кэш и повторяем попытку...")
-        cache_dir = os.path.join(os.path.expanduser("~"), ".wdm")
-        if os.path.exists(cache_dir):
-            import shutil
-            shutil.rmtree(cache_dir)
-            logger.info("Кэш ChromeDriver удалён.")
-        driver_path = ChromeDriverManager().install()
-        return driver_path
+        err_msg = str(e)
+        logger.warning(f"Не удалось проверить статус расширения: {err_msg}")
+        if "Timed out receiving message from renderer:" in err_msg:
+            raise RendererTimeoutError(err_msg)
+        return None
+
+def get_chromedriver_path():
+    with chromedriver_lock:
+        try:
+            driver_path = ChromeDriverManager().install()
+            return driver_path
+        except Exception as e:
+            logger.error(f"Ошибка при установке ChromeDriver: {e}. Очищаем кэш и повторяем попытку...")
+            cache_dir = os.path.join(os.path.expanduser("~"), ".wdm")
+            if os.path.exists(cache_dir):
+                try:
+                    shutil.rmtree(cache_dir)
+                    logger.info("Кэш ChromeDriver удалён.")
+                except Exception as e2:
+                    logger.error(f"Не удалось удалить кэш ChromeDriver: {e2}")
+            driver_path = ChromeDriverManager().install()
+            return driver_path
 
 def test_proxy_speed(proxy, test_url="https://www.google.com", timeout=5):
-    """
-    Проверяет время отклика прокси, отправляя запрос на test_url.
-    Возвращает время ответа в секундах или None, если запрос не удался.
-    """
     start = time.time()
     try:
         response = requests.get(test_url, proxies={"http": proxy, "https": proxy}, timeout=timeout)
@@ -386,29 +370,19 @@ def test_proxy_speed(proxy, test_url="https://www.google.com", timeout=5):
         return None
 
 def attempt_connection(proxy, account):
-    """
-    Пытается установить соединение с использованием прокси и аккаунта.
-    Если прокси слишком медленный или не работает – пропускаем его.
-    """
-    THRESHOLD = 10  # макс. допустимое время отклика (сек.)
+    THRESHOLD = CONFIG["PROXY_THRESHOLD"]
     if proxy is not None:
         elapsed = test_proxy_speed(proxy, timeout=5)
         if elapsed is None or elapsed > THRESHOLD:
             logger.warning(f"Прокси {proxy} слишком медленный (ping = {elapsed} сек.), пропускаем его.")
             return None
-
-    # Запускаем Chrome
     try:
         chrome_options = setup_chrome_options(proxy)
         driver_path = get_chromedriver_path()
         driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
-        driver.set_page_load_timeout(300)
-        driver.set_script_timeout(300)
-        # Скачиваем расширение (если не скачано)
-        download_extension()
-        # Логинимся
+        driver.set_page_load_timeout(CONFIG["PAGE_LOAD_TIMEOUT"])
+        driver.set_script_timeout(CONFIG["SCRIPT_TIMEOUT"])
         login_to_app(driver, account)
-        # Открываем (или пропускаем) расширение
         open_extension(driver)
         logger.info(f"Подключение успешно {'без прокси' if proxy is None else f'с прокси: {proxy}'} для аккаунта {account[0]}")
         return driver
@@ -420,283 +394,89 @@ def attempt_connection(proxy, account):
             pass
         return None
 
-def worker(account, proxy, node_index):
-    """
-    Функция-воркер для выполнения задач для конкретного аккаунта.
-    node_index – порядковый номер "ноды" для этого аккаунта.
-    """
-    driver = attempt_connection(proxy, account)
-    if driver:
-        logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Работаем.")
+def remove_proxy(proxy, proxies_list):
+    with proxies_lock:
+        if proxy in proxies_list:
+            proxies_list.remove(proxy)
+            update_proxies_file(proxies_list)
+            logger.info(f"Прокси {proxy} удалён из списка.")
+
+def worker(account, proxies_list, node_index):
+    # Устанавливаем случайный интервал проверки статуса от 30 до 90 минут
+    status_check_interval = random.uniform(CONFIG["STATUS_CHECK_INTERVAL_MIN"], CONFIG["STATUS_CHECK_INTERVAL_MAX"])
+    last_status_check = time.time()
+    current_proxy = None
+    while True:
+        driver = None
+        # Пытаемся подключиться с ротацией прокси
+        while not driver:
+            with proxies_lock:
+                if not proxies_list:
+                    proxies_list = reload_proxies(proxies_list)
+                    if not proxies_list:
+                        logger.error(f"Нет рабочих прокси для аккаунта {account[0]}. Ждем перезагрузки...")
+                        time.sleep(CONFIG["PROXY_RELOAD_INTERVAL"])
+                        continue
+                current_proxy = random.choice(proxies_list)
+            logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Попытка подключения с прокси: {current_proxy}")
+            driver = attempt_connection(current_proxy, account)
+            if driver is None:
+                remove_proxy(current_proxy, proxies_list)
+                logger.info(f"Пробуем следующий прокси для аккаунта {account[0]}")
+                time.sleep(CONFIG["RETRY_INTERVAL"])
+        logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Подключение установлено, работаем.")
         try:
             while True:
-                # Имитация случайных задержек и активности
-                time.sleep(random.uniform(20, 40))
+                time.sleep(random.uniform(CONFIG["TASK_INTERVAL_MIN"], CONFIG["TASK_INTERVAL_MAX"]))
+                # Если пришло время проверки статуса (между 30 и 90 мин)
+                if time.time() - last_status_check >= status_check_interval:
+                    try:
+                        status = check_gradient_status(driver)
+                        last_status_check = time.time()
+                        status_check_interval = random.uniform(CONFIG["STATUS_CHECK_INTERVAL_MIN"], CONFIG["STATUS_CHECK_INTERVAL_MAX"])
+                        if status is None or "Good" not in status:
+                            logger.warning(f"Статус расширения ({status}) не равен 'Good'. Ротация прокси для аккаунта {account[0]}.")
+                            break
+                    except RendererTimeoutError as rte:
+                        # Проверка прокси: если прокси рабочий, не нужно ротацию
+                        elapsed = test_proxy_speed(current_proxy, timeout=5) if current_proxy else None
+                        if elapsed is not None and elapsed <= CONFIG["PROXY_THRESHOLD"]:
+                            logger.warning(f"Ошибка проверки расширения (rte: {rte}), но прокси {current_proxy} работает (ping = {elapsed} сек.). Продолжаем работу.")
+                        else:
+                            logger.warning(f"Ошибка проверки расширения (rte: {rte}) и прокси {current_proxy} не отвечает. Ротация прокси для аккаунта {account[0]}.")
+                            break
                 logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Выполнение задач...")
-
-                # Пример дополнительной имитации: обновляем страницу и скроллим
-                # (Если HEADLESS=False, можно визуально увидеть эти действия)
-                try:
-                    driver.refresh()
-                    time.sleep(1000)
-                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    logger.info("Имитация активности: страница обновлена и прокручена вниз.")
-                except Exception:
-                    pass
-
+                driver.refresh()
+                time.sleep(10)
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                logger.info("Имитация активности: страница обновлена и прокручена вниз.")
         except KeyboardInterrupt:
             logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Остановка по запросу пользователя.")
+            break
         finally:
             driver.quit()
-    else:
-        logger.info(f"Аккаунт {account[0]} - Нода {node_index}: Не удалось подключиться. Переход к следующему.")
+        # Если статус не удовлетворительный, повторяем подключение с новым прокси
 
-def add_accounts_interactive():
-    """
-    Интерактивное добавление новых аккаунтов в файл accounts.txt.
-    Формат: email:пароль (по одной записи на строку).
-    """
-    print("\nВведите новые аккаунты (формат: email:пароль, один на строку). Пустая строка для завершения:")
-    new_accounts = []
-    while True:
-        entry = input().strip()
-        if not entry:
-            break
-        if ":" in entry:
-            parts = entry.split(":")
-            email = parts[0].strip()
-            password = ":".join(parts[1:]).strip()
-            if email and password:
-                new_accounts.append((email, password))
-        else:
-            print("Неверный формат. Используйте email:пароль.")
-    if new_accounts:
-        save_accounts(new_accounts)
-    else:
-        print("Нет новых аккаунтов для добавления.")
-
-def add_proxies_interactive():
-    """
-    Интерактивное добавление новых прокси в файл active_proxies.txt.
-    Можно вводить несколько прокси (по одной строке).
-    """
-    print("\nВведите новые прокси (один на строку). Пустая строка для завершения:")
-    new_proxies = []
-    while True:
-        entry = input().strip()
-        if not entry:
-            break
-        new_proxies.append(entry)
-    if new_proxies:
-        save_proxies(new_proxies)
-    else:
-        print("Нет новых прокси для добавления.")
-
-def auto_run_unique(accounts, proxies):
-    """
-    Пример автоматического запуска: "1 аккаунт = 1 прокси"
-    Запускаем по одной ноде для каждого аккаунта.
-    """
-    if len(proxies) < len(accounts):
-        logger.error("Недостаточно прокси для всех аккаунтов. Требуется 1 прокси на аккаунт.")
-        return
-
-    unique_mapping = {account[0]: proxies[i] for i, account in enumerate(accounts)}
-    logger.info("Уникальное сопоставление аккаунт -> прокси:")
-    for acc, prox in unique_mapping.items():
-        logger.info(f"  {acc} -> {prox}")
-
-    with ThreadPoolExecutor(max_workers=len(accounts)) as executor:
+def auto_run_all(accounts, proxies_list):
+    max_workers = min(len(accounts), CONFIG["MAX_THREADS"])
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for account in accounts:
-            assigned_proxy = unique_mapping[account[0]]
-            # Запускаем 1 ноду на аккаунт (при необходимости можно увеличить)
-            futures.append(executor.submit(worker, account, assigned_proxy, 1))
+            futures.append(executor.submit(worker, account, proxies_list, 1))
         for future in as_completed(futures):
-            future.result()  # Если нужно обработать исключения
-
-def management_interface(accounts):
-    """
-    Интерактивное меню для управления ботом.
-    """
-    global proxies
-    while True:
-        print("\nМеню управления:")
-        print("1. Автоматический запуск: 1 аккаунт = 1 прокси")
-        print("2. Запустить бота для одного аккаунта (с прокси)")
-        print("3. Запустить бота для одного аккаунта (без прокси)")
-        print("4. Запустить бота для всех аккаунтов (с прокси)")
-        print("5. Запустить бота для всех аккаунтов (без прокси)")
-        print("6. Добавить новые аккаунты")
-        print("7. Добавить новые прокси")
-        print("8. Проверить/Установить Google Chrome и ChromeDriver")
-        print("9. Выход")
-        choice = input("Выберите опцию (1-9): ").strip()
-
-        if choice == "1":
-            # Автоматический запуск: 1 аккаунт = 1 прокси
-            auto_run_unique(accounts, proxies)
-
-        elif choice == "2":
-            print("\nСписок аккаунтов:")
-            for idx, account in enumerate(accounts, start=1):
-                print(f"{idx}. {account[0]}")
             try:
-                sel = int(input("Выберите номер аккаунта: ").strip())
-                if 1 <= sel <= len(accounts):
-                    selected_account = accounts[sel - 1]
-                    print("\nСписок доступных прокси:")
-                    for idx, pr in enumerate(proxies, start=1):
-                        print(f"{idx}. {pr if pr else 'Direct mode'}")
-                    sel_proxy_input = input("Выберите номер прокси (или оставьте пустым для случайного выбора): ").strip()
-                    if sel_proxy_input:
-                        sel_proxy = int(sel_proxy_input)
-                        if 1 <= sel_proxy <= len(proxies):
-                            chosen_proxy = proxies[sel_proxy - 1]
-                        else:
-                            print("Неверный выбор прокси. Будет использовано случайное прокси.")
-                            chosen_proxy = random.choice(proxies)
-                    else:
-                        chosen_proxy = random.choice(proxies)
-
-                    sessions_input = input("Введите количество сессий (нод) для данного аккаунта: ").strip()
-                    try:
-                        sessions = int(sessions_input)
-                    except ValueError:
-                        sessions = 1
-                        print("Неверное значение. Будет запущена 1 сессия.")
-
-                    delay_input = input("Введите задержку между запуском нод (в секундах): ").strip()
-                    try:
-                        delay = float(delay_input)
-                    except ValueError:
-                        delay = 0
-
-                    logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий с прокси {chosen_proxy if chosen_proxy else 'Direct mode'} с задержкой {delay} сек.")
-                    with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions+1):
-                            executor.submit(worker, selected_account, chosen_proxy, node)
-                            time.sleep(delay)
-                else:
-                    print("Неверный номер аккаунта.")
-            except ValueError:
-                print("Пожалуйста, введите корректное число.")
-
-        elif choice == "3":
-            print("\nЗапуск бота без прокси для одного аккаунта.")
-            print("\nСписок аккаунтов:")
-            for idx, account in enumerate(accounts, start=1):
-                print(f"{idx}. {account[0]}")
-            try:
-                sel = int(input("Выберите номер аккаунта: ").strip())
-                if 1 <= sel <= len(accounts):
-                    selected_account = accounts[sel - 1]
-                    sessions_input = input("Введите количество сессий (нод) для данного аккаунта: ").strip()
-                    try:
-                        sessions = int(sessions_input)
-                    except ValueError:
-                        sessions = 1
-                        print("Неверное значение. Будет запущена 1 сессия.")
-
-                    delay_input = input("Введите задержку между запуском нод (в секундах): ").strip()
-                    try:
-                        delay = float(delay_input)
-                    except ValueError:
-                        delay = 0
-
-                    logger.info(f"Аккаунт {selected_account[0]}: запуск {sessions} сессий без прокси с задержкой {delay} сек.")
-                    with ThreadPoolExecutor(max_workers=sessions) as executor:
-                        for node in range(1, sessions+1):
-                            executor.submit(worker, selected_account, None, node)
-                            time.sleep(delay)
-                else:
-                    print("Неверный номер аккаунта.")
-            except ValueError:
-                print("Пожалуйста, введите корректное число.")
-
-        elif choice == "4":
-            try:
-                sessions_input = input("Введите количество сессий (нод) для каждого аккаунта: ").strip()
-                try:
-                    sessions = int(sessions_input)
-                except ValueError:
-                    sessions = 1
-                delay_input = input("Введите задержку между запуском нод (в секундах): ").strip()
-                try:
-                    delay = float(delay_input)
-                except ValueError:
-                    delay = 0
-                logger.info(f"Запуск бота для всех аккаунтов с прокси. Будет запущено {sessions} сессий на каждый аккаунт с задержкой {delay} сек.")
-                with ThreadPoolExecutor(max_workers=min(len(accounts)*sessions, 5)) as executor:
-                    futures = []
-                    for account in accounts:
-                        for node in range(1, sessions+1):
-                            chosen_proxy = random.choice(proxies)
-                            futures.append(executor.submit(worker, account, chosen_proxy, node))
-                            time.sleep(delay)
-                    for future in as_completed(futures):
-                        future.result()
-            except KeyboardInterrupt:
-                logger.info("Остановка всех воркеров по запросу пользователя.")
-                break
-
-        elif choice == "5":
-            try:
-                sessions_input = input("Введите количество сессий (нод) для каждого аккаунта: ").strip()
-                try:
-                    sessions = int(sessions_input)
-                except ValueError:
-                    sessions = 1
-                delay_input = input("Введите задержку между запуском нод (в секундах): ").strip()
-                try:
-                    delay = float(delay_input)
-                except ValueError:
-                    delay = 0
-                logger.info(f"Запуск бота для всех аккаунтов без прокси. Будет запущено {sessions} сессий на каждый аккаунт с задержкой {delay} сек.")
-                with ThreadPoolExecutor(max_workers=len(accounts)*sessions) as executor:
-                    futures = []
-                    for account in accounts:
-                        for node in range(1, sessions+1):
-                            futures.append(executor.submit(worker, account, None, node))
-                            time.sleep(delay)
-                    for future in as_completed(futures):
-                        future.result()
-            except KeyboardInterrupt:
-                logger.info("Остановка всех воркеров по запросу пользователя.")
-                break
-
-        elif choice == "6":
-            add_accounts_interactive()
-            accounts[:] = load_accounts()
-
-        elif choice == "7":
-            add_proxies_interactive()
-            proxies[:] = load_proxies()
-
-        elif choice == "8":
-            print("\nМеню проверки и установки браузера и драйвера (Linux):")
-            print("1. Проверить установленные Google Chrome и ChromeDriver")
-            print("2. Установить Google Chrome 114 и ChromeDriver 114")
-            sub_choice = input("Выберите опцию (1-2): ").strip()
-            if sub_choice == "1":
-                check_browser_driver()
-            elif sub_choice == "2":
-                install_chrome_114()
-            else:
-                print("Неверный выбор.")
-
-        elif choice == "9":
-            print("Выход из программы.")
-            exit(0)
-        else:
-            print("Неверный выбор. Попробуйте снова.")
+                future.result()
+            except Exception as e:
+                logger.error(f"Ошибка в воркере: {e}")
 
 def main():
     accounts = load_accounts()
-    global proxies
-    proxies = load_proxies()
-    # Показываем меню
-    management_interface(accounts)
+    if not accounts:
+        logger.error("Аккаунты не найдены. Завершение работы.")
+        exit(1)
+    proxies_list = load_proxies()
+    download_extension()  # Сначала скачиваем расширение без прокси
+    auto_run_all(accounts, proxies_list)
 
 if __name__ == "__main__":
     main()

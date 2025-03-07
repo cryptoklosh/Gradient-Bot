@@ -1,0 +1,7 @@
+services:
+  node:
+    image: gradient-bot:latest
+    restart: unless-stopped
+    volumes:
+      - accounts.txt:/app/accounts.txt
+      - active_proxies.txt:/app/active_proxies.txt
